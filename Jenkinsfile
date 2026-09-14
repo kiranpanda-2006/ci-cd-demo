@@ -1,121 +1,91 @@
-pipeline {
+stage('Deploy') {
 
-    agent any
-
-    options {
-        skipDefaultCheckout(true)
+    when {
+        branch 'master'
     }
 
-    stages {
+    steps {
 
-        stage('Checkout') {
-            steps {
-                checkout scm
-            }
-        }
+        sh '''
+            set -e
 
-        stage('Compile') {
-            steps {
-                sh './mvnw -B -DskipTests compile'
-            }
-        }
+            DEPLOY_ROOT=/opt/cicd-demo/spring
+            RELEASE_DIR="$DEPLOY_ROOT/releases/$BUILD_NUMBER"
 
-        stage('Tests') {
+            mkdir -p "$RELEASE_DIR"
 
-            steps {
-                sh './mvnw -B test'
-            }
+            JAR_FILE=$(find target \
+                -maxdepth 1 \
+                -type f \
+                -name '*.jar' \
+                ! -name '*-sources.jar' \
+                | head -1)
 
-            post {
-                always {
-                    junit 'target/surefire-reports/*.xml'
-                }
-            }
-        }
+            if [ -z "$JAR_FILE" ]; then
+                echo "ERROR: No JAR file found"
+                exit 1
+            fi
 
-        stage('Package') {
+            echo "Deploying: $JAR_FILE"
 
-            steps {
-                sh './mvnw -B -DskipTests package'
+            cp "$JAR_FILE" "$RELEASE_DIR/app.jar"
 
-                archiveArtifacts 'target/*.jar'
-            }
-        }
+            if [ -f "$DEPLOY_ROOT/app.pid" ]; then
 
-        stage('Deploy') {
+                OLD_PID=$(cat "$DEPLOY_ROOT/app.pid" || true)
 
-            when {
-                branch 'master'
-            }
+                if [ -n "$OLD_PID" ] && \
+                   kill -0 "$OLD_PID" 2>/dev/null; then
 
-            steps {
+                    echo "Stopping old application: $OLD_PID"
+                    kill "$OLD_PID" || true
+                    sleep 3
+                fi
+            fi
 
-                sh '''
-                    set -e
+            echo "Starting application..."
 
-                    DEPLOY_ROOT=/opt/cicd-demo/spring
-                    RELEASE_DIR="$DEPLOY_ROOT/releases/$BUILD_NUMBER"
+            JENKINS_NODE_COOKIE=dontKillMe \
+            APP_VERSION="$BUILD_NUMBER" \
+            nohup java \
+                -jar "$RELEASE_DIR/app.jar" \
+                > "$DEPLOY_ROOT/app.log" 2>&1 &
 
-                    rm -rf "$RELEASE_DIR"
-                    mkdir -p "$RELEASE_DIR"
+            echo $! > "$DEPLOY_ROOT/app.pid"
 
-                    JAR_FILE=$(find target \
-                        -maxdepth 1 \
-                        -type f \
-                        -name '*.jar' \
-                        | head -1)
+            echo "Application PID: $(cat "$DEPLOY_ROOT/app.pid")"
+        '''
+    }
+}
 
-                    cp "$JAR_FILE" \
-                       "$RELEASE_DIR/app.jar"
+stage('Smoke Test') {
 
-                    if [ -f "$DEPLOY_ROOT/app.pid" ]; then
-
-                        OLD_PID=$(cat "$DEPLOY_ROOT/app.pid" || true)
-
-                        if [ -n "$OLD_PID" ] && \
-                           kill -0 "$OLD_PID" 2>/dev/null; then
-
-                            kill "$OLD_PID" || true
-                            sleep 3
-                        fi
-                    fi
-
-                    JENKINS_NODE_COOKIE=dontKillMe \
-                    APP_VERSION="$BUILD_NUMBER" \
-                    nohup java \
-                    -jar "$RELEASE_DIR/app.jar" \
-                    > "$DEPLOY_ROOT/app.log" 2>&1 &
-
-                    echo $! > "$DEPLOY_ROOT/app.pid"
-                '''
-            }
-        }
-
-        stage('Smoke Test') {
-
-            when {
-                branch 'master'
-            }
-
-            steps {
-
-                sh '''
-                    sleep 5
-                    curl -f \
-                    http://127.0.0.1:8081/api/health
-                '''
-            }
-        }
+    when {
+        branch 'master'
     }
 
-    post {
+    steps {
 
-        success {
-            echo 'SPRING PIPELINE SUCCESSFUL'
-        }
+        sh '''
+            echo "Waiting for application to start..."
 
-        failure {
-            echo 'SPRING PIPELINE FAILED'
-        }
+            for i in $(seq 1 30); do
+
+                if curl -fs http://127.0.0.1:8081/actuator/health; then
+                    echo ""
+                    echo "APPLICATION IS UP!"
+                    exit 0
+                fi
+
+                echo "Application not ready yet... attempt $i/30"
+                sleep 2
+            done
+
+            echo "ERROR: Application failed to start"
+            echo "===== APPLICATION LOG ====="
+            cat /opt/cicd-demo/spring/app.log || true
+
+            exit 1
+        '''
     }
 }
