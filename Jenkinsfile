@@ -67,13 +67,15 @@ stage('Smoke Test') {
     steps {
 
         sh '''
-            echo "Waiting for application to start..."
+            echo "Waiting for Spring Boot application..."
 
             for i in $(seq 1 30); do
 
-                if curl -fs http://127.0.0.1:8081/actuator/health; then
+                if curl -fs http://127.0.0.1:8081/api/health; then
                     echo ""
+                    echo "================================="
                     echo "APPLICATION IS UP!"
+                    echo "================================="
                     exit 0
                 fi
 
@@ -82,10 +84,11 @@ stage('Smoke Test') {
             done
 
             echo "ERROR: Application failed to start"
+
             echo "===== APPLICATION LOG ====="
             cat /opt/cicd-demo/spring/app.log || true
 
             exit 1
         '''
     }
-}
+}}
